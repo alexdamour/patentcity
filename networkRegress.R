@@ -1,5 +1,5 @@
 library(igraph)
-source("loadGraphs.R")
+source("networkUtils.R")
 source("panel_funcs.R")
 
 pois_loglike <- function(par, X, y){
@@ -73,34 +73,6 @@ sample_nonedges <- function(g, mult=1){
     }
     print(paste("Sampled", dim(new_edges)[1], "of", num_edges, "edges."))
     return(new_edges)
-}
-
-choose_msa_window <- function(g, msa, window_start, win_len, keep_singletons=F){
-    msa_window_edges <- which((E(g)$h_msa==msa & E(g)$t_msa==msa) &
-                              (E(g)$appyear >= window_start) &
-                              (E(g)$appyear < (window_start + win_len)))
-    return(subset.on.edgeset(g, msa_window_edges, F))
-}
-
-create_save_panels <- function(window_starts, ...){
-    load("final_graph_full_msa.RData")
-    print("Loaded graph!")
-    print(window_starts)
-    sival_list <- lapply(window_starts, function(x) {choose_msa_window(g, 41940, x, ...)})
-    print("Made list, saving...")
-    save(sival_list, file="sival_list.RData")
-    print("Silicon Valley")
-    print(lapply(sival_list, vcount))
-    
-    boston_list <- lapply(window_starts, function(x) {choose_msa_window(g, 14460, x, ...)})
-    save(boston_list, file="boston_list.RData")
-    print("Boston")
-    print(lapply(boston_list, vcount))
-
-    buffalo_list <- lapply(window_starts, function(x) {choose_msa_window(g, 15380, x, ...)})
-    save(buffalo_list, file="buffalo_list.RData")
-    print("Buffalo")
-    print(lapply(buffalo_list, vcount))
 }
 
 component <- function(g,num=1){
@@ -205,4 +177,8 @@ fit_giant_model <- function(filename, start_range, window){
 #fit <- glm.fit(X,Y,family=binomial(link="logit"))
 #load("buf_list.RData")
 #fit_list <- lapply(seq(1976,2002), function(x){fit_model(buf_list, "Buffalo_15380_invs.csv", x)})
-fit <- fit_giant_model("Buffalo_15380_invs.csv", 1976:2002, 6)
+
+filename <- "Buffalo_15380_invs.csv"
+ss <- calc_graph_stats(filename, seq(1975,2003), 7)
+
+#fit <- fit_giant_model("Buffalo_15380_invs.csv", 1976:2002, 6)
