@@ -51,8 +51,8 @@ standard_edges <- function(g){
 #date range
 calc_graph_stats <- function(filename, start_range, window){
     df <- read.csv(filename, stringsAsFactors=F, header=T)
-    g <- simplify(load_graph(df, NULL, NULL))
-    active_dyads <- get.edges(g, E(g))
+#    g <- simplify(load_graph(df, NULL, NULL))
+#active_dyads <- get.edges(g, E(g))
     rm(g)
 
     g0 <- load_graph(df, start_range[1], window)
@@ -61,10 +61,13 @@ calc_graph_stats <- function(filename, start_range, window){
     giant <- vcount(component(g0, 1))/vcount(g0)
     stat_df <- data.frame(s=start_range[1], addE=NA, delE=NA, addN=NA, delN=NA,
                             edges=ecount(simplify(g0)), verts=vcount(g0), giant=giant)
+    g_list <- list()
+    g_list[[as.character(start_range[1])] <- g0]
     #g0 <- g0.tmp
 
     for(s in start_range[-1]){
         g1 <- load_graph(df, s, window) 
+        g_list[[as.character(s)]] <- g1
 
         #newEdges <- as.numeric(apply(active_dyads, 1, function(x){
         #            are.connected(g1, x[1], x[2])}))
@@ -84,7 +87,7 @@ calc_graph_stats <- function(filename, start_range, window){
                                         edges=ecount(simplify(g1)), verts=vcount(g1), giant=giant))
         g0 <- g1
     }
-    stat_df
+    return(list(stat_df=stat_df, graph_list=g_list))
 }
 
 load_windows <- function(filename, starts, window){
@@ -112,4 +115,3 @@ remake_lists <- function(starts, window){
 #    names(boston_list) <- starts
 #    save(boston_list, file="boston_list.RData")
 }
-
