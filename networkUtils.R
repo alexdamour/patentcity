@@ -9,14 +9,21 @@ load_graph <- function(df, start_year, window){
     drop_cols <- c("appdate", "gdate", "claims", "classes", "scls_cnt", "scls_1", "scls_pair_1", "back5", "back5_sc", "back_sc", "forw5", "forw5_sc", "forw", "forw_sc", "X")
     for(d in drop_cols)
         df[[d]] <- NULL
+
+    #Include last time period's inventors in this time window.
+    #This allows us to look at ties that disappeared.
     if(!is.null(start_year) & !is.null(window))
-        df <- df[df$appyear >=start_year & df$appyear < (start_year + window),]
+        df <- df[df$appyear >=(start_year-1) & df$appyear < (start_year + window),]
     verts <- aggregate(df, by=list(df$invnum_N), min)
     print(length(unique(df$invnum_N)))
     print(dim(verts))
     
     g <- add.vertices(g, dim(verts)[1], attr=data.frame(invnum_N=verts$invnum_N))
     print(list.vertex.attributes(g))
+
+    if(!is.null(start_year) & !is.null(window))
+        df <- df[df$appyear >=start_year & df$appyear < (start_year + window),]
+
     edges <- merge(df, df, by=c("patent", "pat_type", "appyear", "assignee", "numasg"), suffixes=c("_h", "_t"))
     edges <- edges[edges$invnum_N_t != edges$invnum_N_h,]
     #return(list(edges, g))
@@ -26,7 +33,17 @@ load_graph <- function(df, start_year, window){
     g <- add.edges(g, matrix(c(edges$h, edges$t), nr=2, byrow=T), attr=edges)
     #g <- subset.on.edgeset(g, (E(g)+1), F)
  
-    return(g)
+    return(simplify(g))
+}
+
+add_by_invnum <- function(g, new_edges){
+    print(ecount(g))
+    print(dim(new_edges)[1])
+    edges_h <- match(as.character(new_edges[,1]), V(g)$invnum_N)-1
+    edges_t <- match(as.character(new_edges[,2]), V(g)$invnum_N)-1
+    g <- add.edges(g, cbind(edges_h, edges_t))
+    print(ecount(g))
+    simplify(g)
 }
 
 #Build an edge hashlist
@@ -47,13 +64,36 @@ standard_edges <- function(g){
                                             invmap[max(x)+1]) })
 }
 
+sample_nonedges <- function(g, mult=1){
+    edges <- get.edges(g, E(g))
+    num_edges <- ecount(g)*mult
+    print(paste("Sampling", num_edges, "non-edges."))
+    num_verts <- vcount(g)
+    num_to_go <- num_edges 
+    new_edges <- data.frame(head=c(), tail=c())
+    while(num_to_go){
+        print(paste("Have", num_edges - num_to_go, "of", num_edges, "edges..."))
+        heads <- sample((1:num_verts)-1, num_to_go, replace=T)
+        tails <- sample((1:num_verts)-1, num_to_go, replace=T)
+        new_edges_app <- data.frame(head=heads, tail=tails)
+        new_edges_app <- new_edges_app[!are.connected(g, new_edges_app$head, new_edges_app$tail),]
+        new_edges_app <- new_edges_app[!(new_edges_app$head==new_edges_app$tail),]
+        new_edges <- rbind(new_edges, new_edges_app)
+        num_to_go <- num_edges - dim(new_edges)[1]
+    }
+    print(paste("Sampled", dim(new_edges)[1], "of", num_edges, "edges."))
+    return(new_edges)
+}
+
+
+
 #Calculate "sufficient" statistcs for all of the window subgraphs in the
 #date range
 calc_graph_stats <- function(filename, start_range, window){
     df <- read.csv(filename, stringsAsFactors=F, header=T)
 #    g <- simplify(load_graph(df, NULL, NULL))
 #active_dyads <- get.edges(g, E(g))
-    rm(g)
+#    rm(g)
 
     g0 <- load_graph(df, start_range[1], window)
     #g0.tmp <- subset.on.edgeset(g0, E(g0)+1, FALSE)
@@ -62,7 +102,7 @@ calc_graph_stats <- function(filename, start_range, window){
     stat_df <- data.frame(s=start_range[1], addE=NA, delE=NA, addN=NA, delN=NA,
                             edges=ecount(simplify(g0)), verts=vcount(g0), giant=giant)
     g_list <- list()
-    g_list[[as.character(start_range[1])] <- g0]
+    g_list[[as.character(start_range[1])]] <- g0
     #g0 <- g0.tmp
 
     for(s in start_range[-1]){
