@@ -55,26 +55,6 @@ build_cumulative_tech <- function(orig_tab, start){
     return(class_bags)
 }
 
-sample_nonedges <- function(g, mult=1){
-    edges <- get.edges(g, E(g))
-    num_edges <- ecount(g)*mult
-    print(paste("Sampling", num_edges, "non-edges."))
-    num_verts <- vcount(g)
-    num_to_go <- num_edges 
-    new_edges <- data.frame(head=c(), tail=c())
-    while(num_to_go){
-        print(paste("Have", num_edges - num_to_go, "of", num_edges, "edges..."))
-        heads <- sample((1:num_verts)-1, num_to_go, replace=T)
-        tails <- sample((1:num_verts)-1, num_to_go, replace=T)
-        new_edges_app <- data.frame(head=heads, tail=tails)
-        new_edges_app <- new_edges_app[!are.connected(g, new_edges_app$heads, new_edges_app$tails),]
-        new_edges <- rbind(new_edges, new_edges_app)
-        num_to_go <- num_edges - dim(new_edges)[1]
-    }
-    print(paste("Sampled", dim(new_edges)[1], "of", num_edges, "edges."))
-    return(new_edges)
-}
-
 component <- function(g,num=1){
 	k <- clusters(g)
 	comp_num <- as.numeric(names(sort(tapply(k$membership, k$membership, length), decreasing=T)[num]))
@@ -89,96 +69,161 @@ inspect_components <- function(listname){
     print(lapply(graph_list, function(g){ vcount(component(g, 1))/vcount(g) }))
 }
 
-fit_model <- function(mylist, filename, year_start){
-    buf_list <- mylist
-    df <- read.csv(filename, stringsAsFactors=F)
-    g <- buf_list[[as.character(year_start)]]
-    cbref <- build_cumulative(g, df, year_start)
-
-    edges <- get.edges(g, E(g))
-    nonedges <- sample_nonedges(g, 1)
-    keymat <- cbind(V(g)$invnum_N[edges[,1]+1], V(g)$invnum_N[edges[,2]+1])
-    keymat <- rbind(keymat, cbind(V(g)$invnum_N[nonedges[,1]+1], V(g)$invnum_N[nonedges[,2]+1]))
-    X <- apply(keymat, 1, function(x){length(intersect(unlist(cbref[[as.character(x[1])]]),
-                                                       unlist(cbref[[as.character(x[2])]])))})
-    #X <- cbind(1, X)
-    Y <- c(rep(1, dim(edges)[1]), rep(0, dim(nonedges)[1]))
-    return(glm(Y~X,family=binomial(link="logit")))
-}
-
-fit_giant_model <- function(filename, start_range, window){
-    df <- read.csv(filename, stringsAsFactors=F)
-    g <- load_graph(filename, NULL, NULL)
-    active_dyads <- get.edges(g, E(g))
-    nonedges <- as.matrix(sample_nonedges(g, 1))
-    all_dyads <- rbind(active_dyads, nonedges)
-    keymat <- cbind(V(g)$invnum_N[all_dyads[,1]+1], V(g)$invnum_N[all_dyads[,2]+1])
-    g1 <- subset.on.edgeset(g, which(E(g)$appyear >= 1975 & E(g)$appyear <= 1981), TRUE)
-    print(dim(all_dyads))
-    Y_last <- data.frame(Y=(as.numeric(apply(all_dyads, 1, function(x){are.connected(g1, x[1], x[2])}))));
+fit_logit_model <- function(df, graph_windows){
     bigY <- data.frame(Y=NULL)
     bigX <- data.frame(ol=NULL, new=NULL, old=NULL)
 
-    for(s in start_range){
-        g1 <- subset.on.edgeset(g,
-                        which(E(g)$appyear >=s &
-                            E(g)$appyear <=s+window),
-                        TRUE)
+    offsets <- 0
 
-        cbref <- build_cumulative_tech(df, s)
-        print(head(cbref))
-        X_overlap <- apply(keymat, 1, function(x){length(intersect(unlist(cbref[[as.character(x[1])]]),
-                                                           unlist(cbref[[as.character(x[2])]])))>0})
-        Y <- data.frame(Y=as.numeric(apply(all_dyads, 1, function(x){are.connected(g1, x[1], x[2])})));
-        print(length(Y))
+    years <- names(graph_windows)
+    g_last <- graph_windows[[years[1]]]
+    edge_last_hash <- build_edge_env(g_last)
+    e_last <- standard_edges(g_last)
+
+    for(year in years[-1]){
+        print(year)
+        g <- graph_windows[[year]]
+        e_cur <- standard_edges(g)
+        edge_cur_hash <- build_edge_env(g)
+
+        active_dyads <- get.edges(g, E(g))
+
+        stale <- unlist(sapply(setdiff(e_last, e_cur), function(e) edge_last_hash[[e]]))
+        just_expired <- get.edges(g_last, stale-1)
+        print("built stale, expired")
+
+        keymat_last <- cbind(V(g_last)$invnum_N[just_expired[,1]+1],
+                     V(g_last)$invnum_N[just_expired[,2]+1])
+        nonedges <- as.matrix(sample_nonedges(add_by_invnum(g, keymat_last), 4))
+        cur_dyads <- rbind(active_dyads, nonedges)
+
+        #Observations
+        Y <- c(rep(1, dim(active_dyads)[1]), rep(0, dim(nonedges)[1]+dim(just_expired)[1]))
         print("Y")
-        X_new <- Y-Y_last > 0
-        X_old <- Y-Y_last < 0
-        X <- data.frame(ol=X_overlap, fresh=X_new, stale=X_old)
+
+        #Tech class overlap
+        keymat <- cbind(V(g)$invnum_N[cur_dyads[,1]+1], V(g)$invnum_N[cur_dyads[,2]+1])
+
+        keymat <- rbind(keymat, keymat_last)
+        cbref <- build_cumulative_tech(df, as.numeric(year))
+        #print(head(cbref))
+        X_overlap <- apply(keymat, 1, function(x){
+                length(intersect(unlist(cbref[[as.character(x[1])]]),
+                                 unlist(cbref[[as.character(x[2])]])))>0
+        })
+
+        Y_last <- numeric(length(Y))
+        print(head(setdiff(e_cur, e_last)))
+        from_last <- sapply(intersect(e_cur, e_last), function(e) edge_cur_hash[[e]])
+        print(head(from_last))
+        Y_last[from_last] <- 1
+        Y_last[-(1:dim(cur_dyads)[1])] <- 1
+
+        Year <- rep(year, length(Y))
+
+        X <- data.frame(ol=X_overlap, Y_last=Y_last, year=Year)
         print("X")
         print(dim(X))
-        Year <- rep(as.character(s), dim(X)[1])
+        offsets <- c(offsets, length(Y))
 
+        Y <- as.matrix(Y, nc=1)
         bigY <- rbind(bigY, Y)
         bigX <- rbind(bigX, X)
-        Y_last <- Y
+
+        g_last <- g
+        e_last <- e_cur
+        edge_last_hash <- edge_cur_hash
     }
     print(dim(bigY))
     print(dim(bigX))
-    dimnames(bigX)[[2]] <- c("ol", "fresh", "stale")
+    #dimnames(bigX)[[2]] <- c("ol", "fresh", "stale", "year")
     dattab <- cbind(bigY, bigX)
-    dattab$year <- as.factor(unlist(sapply(start_range, function(x){rep(x, dim(keymat)[1])})))
-    print(head(dattab))
-    return(glm(Y~ol+fresh+stale+year,data = dattab, family=binomial(link="logit")))
+    return(list(dat=dattab, offsets=cumsum(offsets)))
+    #print(head(dattab))
+    #return(glm(Y~ol+fresh+stale+year,data = dattab, family=binomial(link="logit")))
 }
 
+rank_edges <- function(g_list, fit, offsets){
+    y <- sort(names(g_list))[-1]
+    for(i in 1:length(y)){
+        g <- g_list[[y[i]]]
+        E(g)$rank <- fit$fitted.values[offsets[i]+(1:ecount(g))]
+        print(all(fit$y[offsets[i]+(1:ecount(g))]==1))
+        g_list[[y[i]]] <- g
+    }
+    return(g_list)
+}
+
+component_percentages <- function(ranked_g_list, threshold){
+    y <- sort(names(ranked_g_list))[-1]
+    pct <- c()
+    compsize <- c()
+    real_compsize <- c()
+    for(i in 1:length(y)){
+        g0 <- ranked_g_list[[y[i]]]
+
+        g_real <- component(g0, 1)
+        real_compsize <- c(real_compsize, vcount(g_real))
+        pct <- c(pct, length(E(g_real)$rank[E(g_real)$rank >= threshold])/ecount(g_real))
+
+        g_fake <- delete.edges(g0, E(g0)[rank < threshold])
+        compsize <- c(compsize, vcount(component(g_fake, 1)))
+    }
+
+    res <- data.frame(pct=pct, compsize=compsize, real_compsize=real_compsize)
+    dimnames(res)[[1]] <- y
+    return(res)
+}
+
+postprocess <- function(g_list, fit, offsets, filestub){
+    gl <- rank_edges(g_list, fit, offsets)
+    res50 <- component_percentages(gl, 0.5)
+    res95 <- component_percentages(gl, 0.95)
+
+    pdf(sprintf("%s_comp_vcount.pdf", filestub))
+    plot(as.numeric(dimnames(res50)[[1]]), res50$compsize, 
+             type='b', lwd=2, col="red",
+             main = "Giant Component Size Test",
+             ylab = "Giant Component Size in Vertices",
+             xlab="Year", ylim=c(0, 300))
+    lines(as.numeric(dimnames(res95)[[1]]), res95$compsize,
+             type='b', lwd=2, col="blue")
+    lines(as.numeric(dimnames(res2)[[1]]), res2$real_compsize,
+             type='b', lwd=2)
+    legend("topleft", legend = c("Real", "50%", "95%"), col=c("black", "red", "blue"),
+            lwd=c(2, 2, 2))
+    dev.off()
+
+    pdf(sprintf("%s_comp_edge_pct.pdf", filestub))
+    plot(as.numeric(dimnames(res50)[[1]]), res50$pct,
+             type='b', lwd=2, col="red",
+             main = "Giant Component Edge Acceptance Rate",
+             ylab = "Percentage of Giant Component Edges Kept",
+             xlab="Year", ylim=c(0, 1))
+    lines(as.numeric(dimnames(res95)[[1]]), res95$pct,
+             type='b', lwd=2, col="blue")
+    legend("bottomleft", legend = c("50%", "95%"), col=c("red", "blue"),
+            lwd=c(2, 2))
+    dev.off()
+}
+        
+
 ###########SCRIPT BEGIN##############
-#window_starts <- seq(1975, 2002, by=1)
-#create_save_panels(window_starts, 5, T)
-#inspect_components("buffalo_list")
-#inspect_components("boston_list")
-#inspect_components("sival_list")
-
-#remake_lists(seq(1975,2002), 6)
-#load("buf_list.RData")
-#df <- read.csv("Buffalo_15380_invs.csv", stringsAsFactors=F)
-#cbs <- lapply(buf_list, function(g){build_cumulative(g, df, 1976)})
-#
-#g <- buf_list[[2]]
-#cbref <- cbs[[2]]
-#edges <- get.edges(g, E(g))
-#nonedges <- sample_nonedges(g, 1)
-#keymat <- cbind(V(g)$invnum_N[edges[,1]+1], V(g)$invnum_N[edges[,2]+1])
-#keymat <- rbind(keymat, cbind(V(g)$invnum_N[nonedges[,1]+1], V(g)$invnum_N[nonedges[,2]+1]))
-#X <- apply(keymat, 1, function(x){length(intersect(unlist(cbref[[as.character(x[1])]]),
-#                                                   unlist(cbref[[as.character(x[2])]])))>0})
-#X <- cbind(1, X)
-#Y <- c(rep(1, dim(edges)[1]), rep(0, dim(nonedges)[1]))
-#fit <- glm.fit(X,Y,family=binomial(link="logit"))
-#load("buf_list.RData")
-#fit_list <- lapply(seq(1976,2002), function(x){fit_model(buf_list, "Buffalo_15380_invs.csv", x)})
-
 filename <- "Buffalo_15380_invs.csv"
-ss <- calc_graph_stats(filename, seq(1975,2003), 7)
+df <- read.csv(filename, stringsAsFactors=FALSE, header=TRUE)
+print("Loaded df...")
 
-#fit <- fit_giant_model("Buffalo_15380_invs.csv", 1976:2002, 6)
+ss <- calc_graph_stats(filename, seq(1989,2002), 7)
+#print(ss$stat_df)
+buffalo_list <- ss$graph_list
+save(buffalo_list, file="buffalo_list.RData")
+print("Created graph windows...")
+
+#load("buffalo_list.RData")
+
+datmat <- fit_logit_model(df, buffalo_list)
+print("Created regression matrix...")
+fit <- glm(V1 ~ ol + Y_last, data=datmat$dat, family=binomial(link="logit"))
+print("Fitted model...")
+postprocess(buffalo_list, fit, datmat$offsets, "gt1980")
+print("Postprocessed.")
